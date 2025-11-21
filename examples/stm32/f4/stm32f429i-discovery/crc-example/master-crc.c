@@ -1,56 +1,277 @@
+/* stm32f429i_master_crc_spi.c
+ *
+ * Demo: MASTER SPI5 + CRC + LED + Botón
+ * Placa: STM32F429I-Discovery
+ *
+ * Pines usados (ajusta si usas otros):
+ *  - SPI5:
+ *      PF7  = SPI5_SCK
+ *      PF8  = SPI5_MISO
+ *      PF9  = SPI5_MOSI
+ *  - LED1 externo: PG0 (salida, LED + resistencia a 3V3)
+ *  - Botón externo: PG1 (entrada con pull-up interno, botón a GND)
+ *  - USART1 para logs: PA9 (TX) -> adaptador USB-Serie / ST-LINK VCP
+ */
+
 #include <libopencm3/stm32/rcc.h>
 #include <libopencm3/stm32/gpio.h>
 #include <libopencm3/stm32/spi.h>
+#include <libopencm3/stm32/usart.h>
+#include <libopencm3/stm32/crc.h>
+
 #include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdio.h>
 
-void spi_master_init(void) {
-    /* Habilitar relojes */
+/* --- Configuración de mensaje y trama --- */
+
+#define FRAME_START   0xAA
+
+static const char mensaje[] = "Hola desde la STM32 MASTER con CRC";
+#define MSG_LEN   ((uint8_t)(sizeof(mensaje) - 1))  /* sin el '\0' */
+
+#define FRAME_LEN  (1 + 1 + MSG_LEN + 4)
+/* 1 byte start + 1 byte len + datos + 4 bytes CRC */
+
+static uint8_t frame[FRAME_LEN];
+
+/* --- Pines (ajustables) --- */
+
+/* LED y botón externos en puerto G */
+#define LED1_PORT   GPIOG
+#define LED1_PIN    GPIO0
+
+#define BTN_PORT    GPIOG
+#define BTN_PIN     GPIO1
+
+/* SPI5 en puerto F */
+#define SPI_PORT    GPIOF
+#define SPI_SCK     GPIO7
+#define SPI_MISO    GPIO8
+#define SPI_MOSI    GPIO9
+
+/* Chip Select manual como GPIO (no obligatorio para el primer demo) */
+#define SPI_CS_PORT GPIOF
+#define SPI_CS_PIN  GPIO10
+
+/* USART1 para logs */
+#define USART_CONSOLE USART1
+#define USART_PORT    GPIOA
+#define USART_TX_PIN  GPIO9
+#define USART_RX_PIN  GPIO10
+
+/* --- Utilidades básicas --- */
+
+static void delay(volatile uint32_t count)
+{
+    while (count--) {
+        __asm__("nop");
+    }
+}
+
+static int button_pressed(void)
+{
+    /* Botón a GND, pull-up interno: nivel bajo = pulsado */
+    return gpio_get(BTN_PORT, BTN_PIN) == 0;
+}
+
+/* Redirección de printf hacia USART1 */
+int _write(int file, char *ptr, int len)
+{
+    (void)file;
+    for (int i = 0; i < len; i++) {
+        if (ptr[i] == '\n') {
+            usart_send_blocking(USART_CONSOLE, '\r');
+        }
+        usart_send_blocking(USART_CONSOLE, ptr[i]);
+    }
+    return len;
+}
+
+/* --- CRC sobre bytes usando hardware CRC --- */
+
+static uint32_t crc32_hw_bytes(const uint8_t *data, size_t len)
+{
+    crc_reset();
+
+    uint32_t word = 0;
+    int byte_count = 0;
+    uint32_t crc = 0;
+
+    for (size_t i = 0; i < len; i++) {
+        word |= ((uint32_t)data[i]) << (8 * byte_count);
+        byte_count++;
+
+        if (byte_count == 4) {
+            crc = crc_calculate(word);
+            word = 0;
+            byte_count = 0;
+        }
+    }
+
+    if (byte_count > 0) {
+        crc = crc_calculate(word);
+    }
+
+    return crc;
+}
+
+/* --- Inicialización de relojes, GPIO, USART y SPI --- */
+
+static void clock_setup(void)
+{
+    /* 168 MHz a partir de HSE 8 MHz (típico en F429I-Discovery) */
+    rcc_clock_setup_hse_3v3(&rcc_hse_8mhz_3v3[RCC_CLOCK_3V3_168MHZ]);
+
+    /* GPIOs */
     rcc_periph_clock_enable(RCC_GPIOA);
-    rcc_periph_clock_enable(RCC_SPI1);
+    rcc_periph_clock_enable(RCC_GPIOF);
+    rcc_periph_clock_enable(RCC_GPIOG);
 
-    /* PA5=SCK, PA6=MISO, PA7=MOSI en AF5 */
-    gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE,
-                    GPIO5 | GPIO6 | GPIO7);
-    gpio_set_af(GPIOA, GPIO_AF5, GPIO5 | GPIO6 | GPIO7);
+    /* SPI5 */
+    rcc_periph_clock_enable(RCC_SPI5);
 
-    /* PA4 = NSS */
-    gpio_mode_setup(GPIOA, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO4);
-    gpio_set(GPIOA, GPIO4);   // NSS HIGH
+    /* USART1 */
+    rcc_periph_clock_enable(RCC_USART1);
 
-    /* Config SPI1 como maestro */
-    spi_reset(SPI1);
-    spi_set_master_mode(SPI1);
-    spi_set_baudrate_prescaler(SPI1, SPI_CR1_BR_FPCLK_DIV_64);
-    spi_set_clock_polarity_0(SPI1);
-    spi_set_clock_phase_0(SPI1);
-    spi_set_full_duplex_mode(SPI1);
-    spi_set_unidirectional_mode(SPI1);
-    spi_set_dff_8bit(SPI1);
-    spi_enable_software_slave_management(SPI1);
-    spi_set_nss_high(SPI1);
-    spi_enable(SPI1);
+    /* CRC */
+    rcc_periph_clock_enable(RCC_CRC);
 }
 
-void spi_send_byte(uint8_t data) {
-    spi_send(SPI1, data);
-    spi_read(SPI1);      // leer basura del esclavo
+static void gpio_setup(void)
+{
+    /* LED1 como salida push-pull */
+    gpio_mode_setup(LED1_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, LED1_PIN);
+    gpio_set_output_options(LED1_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, LED1_PIN);
+    gpio_clear(LED1_PORT, LED1_PIN);  /* LED apagado inicialmente */
+
+    /* Botón como entrada con pull-up */
+    gpio_mode_setup(BTN_PORT, GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, BTN_PIN);
+
+    /* Pines SPI5: PF7=SCK, PF8=MISO, PF9=MOSI */
+    gpio_mode_setup(SPI_PORT, GPIO_MODE_AF, GPIO_PUPD_NONE,
+                    SPI_SCK | SPI_MISO | SPI_MOSI);
+    gpio_set_output_options(SPI_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ,
+                            SPI_SCK | SPI_MISO | SPI_MOSI);
+    gpio_set_af(SPI_PORT, GPIO_AF5, SPI_SCK | SPI_MISO | SPI_MOSI);
+
+    /* CS manual en PF10 */
+    gpio_mode_setup(SPI_CS_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, SPI_CS_PIN);
+    gpio_set_output_options(SPI_CS_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, SPI_CS_PIN);
+    gpio_set(SPI_CS_PORT, SPI_CS_PIN);  /* CS inactivo alto */
+
+    /* USART1: PA9=TX, PA10=RX */
+    gpio_mode_setup(USART_PORT, GPIO_MODE_AF, GPIO_PUPD_NONE,
+                    USART_TX_PIN | USART_RX_PIN);
+    gpio_set_af(USART_PORT, GPIO_AF7, USART_TX_PIN | USART_RX_PIN);
 }
 
-int main(void) {
-    spi_master_init();
+static void usart_setup(void)
+{
+    usart_set_baudrate(USART_CONSOLE, 115200);
+    usart_set_databits(USART_CONSOLE, 8);
+    usart_set_stopbits(USART_CONSOLE, USART_STOPBITS_1);
+    usart_set_mode(USART_CONSOLE, USART_MODE_TX);  /* solo TX */
+    usart_set_parity(USART_CONSOLE, USART_PARITY_NONE);
+    usart_set_flow_control(USART_CONSOLE, USART_FLOWCONTROL_NONE);
+    usart_enable(USART_CONSOLE);
+}
 
-    uint8_t mensaje[4] = {0x11, 0x22, 0x33, 0x44};
+static void spi_setup(void)
+{
+    spi_reset(SPI5);
+
+    /* Modo master, 8 bits, MSB primero, CPOL=0, CPHA=1 (modo SPI 1) */
+    spi_init_master(SPI5,
+                    SPI_CR1_BAUDRATE_FPCLK_DIV_64,
+                    SPI_CR1_CPOL_CLK_TO_0_WHEN_IDLE,
+                    SPI_CR1_CPHA_CLK_TRANSITION_1,
+                    SPI_CR1_CRCL_8BIT,
+                    SPI_CR1_MSBFIRST);
+
+    spi_set_full_duplex_mode(SPI5);
+
+    /* No usamos el pin NSS hardware: gestión por software para evitar MODE FAULT */
+    spi_enable_software_slave_management(SPI5);
+    spi_set_nss_high(SPI5);
+
+    spi_enable(SPI5);
+}
+
+/* --- Construcción y envío de la trama --- */
+
+static void build_frame(void)
+{
+    frame[0] = FRAME_START;
+    frame[1] = MSG_LEN;
+    memcpy(&frame[2], mensaje, MSG_LEN);
+
+    uint32_t crc = crc32_hw_bytes((const uint8_t *)&frame[2], MSG_LEN);
+
+    size_t idx = 2 + MSG_LEN;
+    frame[idx + 0] = (uint8_t)(crc & 0xFFu);
+    frame[idx + 1] = (uint8_t)((crc >> 8) & 0xFFu);
+    frame[idx + 2] = (uint8_t)((crc >> 16) & 0xFFu);
+    frame[idx + 3] = (uint8_t)((crc >> 24) & 0xFFu);
+}
+
+static void spi_send_frame(void)
+{
+    /* LED fijo encendido mientras estamos en "modo envío" */
+    gpio_set(LED1_PORT, LED1_PIN);
+
+    /* Selecciona al slave (CS bajo) */
+    gpio_clear(SPI_CS_PORT, SPI_CS_PIN);
+    delay(10000);
+
+    for (size_t i = 0; i < FRAME_LEN; i++) {
+        /* Parpadeo visible: toggle por byte + pequeña pausa */
+        gpio_toggle(LED1_PORT, LED1_PIN);
+        spi_xfer(SPI5, frame[i]);
+        delay(500000);
+    }
+
+    /* Desseleccionar slave */
+    gpio_set(SPI_CS_PORT, SPI_CS_PIN);
+
+    /* LED vuelve al estado apagado cuando termina el envío */
+    gpio_clear(LED1_PORT, LED1_PIN);
+}
+
+/* --- main --- */
+
+int main(void)
+{
+    clock_setup();
+    gpio_setup();
+    usart_setup();
+    spi_setup();
+
+    printf("\n[MASTER] Demo CRC + SPI STM32F429I\n");
+    printf("[MASTER] Longitud mensaje: %u bytes\n", (unsigned)MSG_LEN);
+    printf("[MASTER] Texto mensaje: \"%s\"\n", mensaje);
+    printf("[MASTER] Pulsa el boton para enviar la trama.\n");
+
+    build_frame();
 
     while (1) {
-        gpio_clear(GPIOA, GPIO4); // NSS LOW
+        if (button_pressed()) {
+            /* Debounce sencillo */
+            delay(500000);
+            if (button_pressed()) {
+                printf("\n[MASTER] Boton pulsado, enviando trama SPI (%u bytes)...\n",
+                       (unsigned)FRAME_LEN);
+                spi_send_frame();
+                printf("[MASTER] Trama enviada.\n");
 
-        for (int i = 0; i < 4; i++) {
-            spi_send_byte(mensaje[i]);
+                /* Esperar a que se suelte el botón */
+                while (button_pressed()) {
+                    /* nada */
+                }
+            }
         }
-
-        gpio_set(GPIOA, GPIO4);   // NSS HIGH
-
-        /* Pequeño delay */
-        for (volatile int i = 0; i < 2000000; i++);
     }
+
+    return 0;
 }
