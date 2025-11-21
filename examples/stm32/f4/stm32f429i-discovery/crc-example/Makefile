@@ -18,6 +18,7 @@
 ##
 
 BINARY = master-crc
+## BINARY = slave-crc
 
 LDSCRIPT = ../stm32f429i-discovery.ld
 
