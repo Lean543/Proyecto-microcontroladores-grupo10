@@ -17,7 +17,7 @@
 ## along with this library.  If not, see <http://www.gnu.org/licenses/>.
 ##
 
-BINARY = master-crc
+BINARY = slave-crc
 ## BINARY = slave-crc
 
 LDSCRIPT = ../stm32f429i-discovery.ld
