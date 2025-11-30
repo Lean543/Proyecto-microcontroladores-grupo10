@@ -17,6 +17,12 @@
 #define MSG_LEN     ((uint8_t)(sizeof("Hola desde la STM32 MASTER con CRC") - 1))
 #define FRAME_LEN   (1 + 1 + MSG_LEN + 4)
 
+#define LED_OK_PORT   GPIOG
+#define LED_OK_PIN    GPIO2   /* LED verde externo (OK) */
+
+#define LED_ERR_PORT  GPIOG
+#define LED_ERR_PIN   GPIO3   /* LED rojo externo (ERROR) */
+
 static uint8_t rx_frame[FRAME_LEN];
 
 /*********** USART REDIRECT ***********/
@@ -62,10 +68,10 @@ static void clock_setup(void)
 
     rcc_periph_clock_enable(RCC_GPIOA);
     rcc_periph_clock_enable(RCC_GPIOF);
+    rcc_periph_clock_enable(RCC_GPIOG);
 
     rcc_periph_clock_enable(RCC_USART1);
     rcc_periph_clock_enable(RCC_SPI5);
-
     rcc_periph_clock_enable(RCC_CRC);
 }
 
@@ -81,7 +87,16 @@ static void gpio_setup(void)
     /* USART1 PA9=TX PA10=RX */
     gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO9 | GPIO10);
     gpio_set_af(GPIOA, GPIO_AF7, GPIO9 | GPIO10);
+
+    /* LEDs externos: PG2 (verde OK), PG3 (rojo ERROR) */
+    gpio_mode_setup(LED_OK_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE,
+                    LED_OK_PIN | LED_ERR_PIN);
+    gpio_set_output_options(LED_OK_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ,
+                            LED_OK_PIN | LED_ERR_PIN);
+    gpio_clear(LED_OK_PORT, LED_OK_PIN | LED_ERR_PIN);  /* ambas apagadas al inicio */
 }
+
+
 
 /*********** USART ***********/
 static void usart_setup(void)
@@ -100,20 +115,21 @@ static void spi_setup(void)
 {
     spi_disable(SPI5);
 
-    /* Configuración directa como SLAVE */
-    SPI_CR1(SPI5) =
-        SPI_CR1_CPOL_CLK_TO_0_WHEN_IDLE |
-        SPI_CR1_CPHA_CLK_TRANSITION_1 |
-        SPI_CR1_DFF_8BIT |
-        SPI_CR1_MSBFIRST;
+    /* Config base similar al master, pero luego pasamos a modo SLAVE */
+    spi_init_master(SPI5,
+                    SPI_CR1_BAUDRATE_FPCLK_DIV_64,            /* Ignorado en slave */
+                    SPI_CR1_CPOL_CLK_TO_0_WHEN_IDLE,
+                    SPI_CR1_CPHA_CLK_TRANSITION_1,
+                    SPI_CR1_DFF_8BIT,
+                    SPI_CR1_MSBFIRST);
 
-    /* Full duplex */
     spi_set_full_duplex_mode(SPI5);
 
-    /* IMPORTANTE: SSM OFF en SLAVE */
-    spi_disable_software_slave_management(SPI5);
-    spi_set_nss_low(SPI5);
+    /* Usar NSS por software para NO depender del pin NSS físico */
+    spi_enable_software_slave_management(SPI5);
+    spi_set_nss_high(SPI5);   /* interno en estado “no fault” */
 
+    /* Ahora sí, modo SLAVE */
     spi_set_slave_mode(SPI5);
 
     spi_enable(SPI5);
@@ -154,9 +170,9 @@ int main(void)
 
         uint8_t len = rx_frame[1];
         uint32_t crc_rx = rx_frame[2 + len] |
-                         (rx_frame[3 + len] << 8) |
-                         (rx_frame[4 + len] << 16) |
-                         (rx_frame[5 + len] << 24);
+                        (rx_frame[3 + len] << 8) |
+                        (rx_frame[4 + len] << 16) |
+                        (rx_frame[5 + len] << 24);
 
         uint32_t crc_calc = crc32_hw_bytes(&rx_frame[2], len);
 
@@ -165,14 +181,20 @@ int main(void)
             usart_send_blocking(USART1, rx_frame[2 + i]);
         printf("\n");
 
-        printf("CRC RX = 0x%08lX\n", crc_rx);
+        printf("CRC RX   = 0x%08lX\n", crc_rx);
         printf("CRC CALC = 0x%08lX\n", crc_calc);
 
-        if (crc_rx == crc_calc)
-            printf(">>> CRC OK\n");
-        else
-            printf(">>> CRC ERROR\n");
-    }
+        if (crc_rx == crc_calc) {
+            printf(">>> CRC OK (datos correctos)\n");
+            /* LED verde ON, LED rojo OFF */
+            gpio_set(LED_OK_PORT, LED_OK_PIN);
+            gpio_clear(LED_ERR_PORT, LED_ERR_PIN);
+        } else {
+            printf(">>> CRC ERROR (CRC mismatch / datos corruptos)\n");
+            /* LED rojo ON, LED verde OFF */
+            gpio_clear(LED_OK_PORT, LED_OK_PIN);
+            gpio_set(LED_ERR_PORT, LED_ERR_PIN);
+        }
 
     return 0;
 }
