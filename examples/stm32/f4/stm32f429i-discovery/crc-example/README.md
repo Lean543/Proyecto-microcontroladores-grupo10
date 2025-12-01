@@ -47,6 +47,30 @@ En esta actividad se estudiarán los siguientes aspectos:
 
 ## Instrucciones
 
+- Abra una consola en Linux: "Ctrl-Alt-t"
+- Instale las dependencias de sistema necesarias para programar el STM32
+ ```bash
+sudo apt-get update
+sudo apt-get install gcc-arm-none-eabi openocd make stlink-tools stlink-gui gdb-multiarch minicom emacs git
+```
+
+Configure un árbol de directorios para desarrollo y descargue libopencm3
+ ```bash
+mkdir -p ~/local/src/repos/github/
+cd ~/local/src/repos/github
+git clone https://github.com/Lean543/Proyecto-microcontroladores-grupo10.git
+cd libopencm3-examples
+git submodule init
+git submodule update
+```
+
+Realice la compilación básica de libopencm3
+ ```bash
+cd libopencm3
+make -j`nproc`
+cd ..
+```
+
 ### Parte 1 – Comunicación SPI + CRC correcto
 
 En esta primera parte se construye una comunicación básica entre dos STM32 donde el **master** envía un mensaje con CRC y el **slave** verifica que el CRC sea correcto.
