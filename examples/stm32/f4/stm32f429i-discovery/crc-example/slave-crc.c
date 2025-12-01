@@ -1,6 +1,6 @@
 /*
  * STM32F429I-Discovery
- * SPI5 SLAVE + CRC + USART working
+ * SPI5 SLAVE + CRC + USART + LEDs OK/ERR
  */
 
 #include <libopencm3/stm32/rcc.h>
@@ -19,7 +19,14 @@
 
 static uint8_t rx_frame[FRAME_LEN];
 
-/*********** USART REDIRECT ***********/
+/*********** NUEVO: LEDs ***********/
+#define LED_OK_PORT   GPIOG
+#define LED_OK_PIN    GPIO13
+
+#define LED_ERR_PORT  GPIOG
+#define LED_ERR_PIN   GPIO14
+/***********************************/
+
 int _write(int file, char *ptr, int len)
 {
     for (int i = 0; i < len; i++) {
@@ -67,6 +74,9 @@ static void clock_setup(void)
     rcc_periph_clock_enable(RCC_SPI5);
 
     rcc_periph_clock_enable(RCC_CRC);
+
+    /*********** NUEVO: GPIOG para LEDs ***********/
+    rcc_periph_clock_enable(RCC_GPIOG);
 }
 
 /*********** GPIO ***********/
@@ -81,6 +91,13 @@ static void gpio_setup(void)
     /* USART1 PA9=TX PA10=RX */
     gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO9 | GPIO10);
     gpio_set_af(GPIOA, GPIO_AF7, GPIO9 | GPIO10);
+
+    /*********** NUEVO: LEDs OK / ERROR ***********/
+    gpio_mode_setup(LED_OK_PORT,  GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, LED_OK_PIN);
+    gpio_mode_setup(LED_ERR_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, LED_ERR_PIN);
+
+    gpio_clear(LED_OK_PORT, LED_OK_PIN);
+    gpio_clear(LED_ERR_PORT, LED_ERR_PIN);
 }
 
 /*********** USART ***********/
@@ -100,17 +117,14 @@ static void spi_setup(void)
 {
     spi_disable(SPI5);
 
-    /* Configuración directa como SLAVE */
     SPI_CR1(SPI5) =
         SPI_CR1_CPOL_CLK_TO_0_WHEN_IDLE |
         SPI_CR1_CPHA_CLK_TRANSITION_1 |
         SPI_CR1_DFF_8BIT |
         SPI_CR1_MSBFIRST;
 
-    /* Full duplex */
     spi_set_full_duplex_mode(SPI5);
 
-    /* IMPORTANTE: SSM OFF en SLAVE */
     spi_disable_software_slave_management(SPI5);
     spi_set_nss_low(SPI5);
 
@@ -148,6 +162,10 @@ int main(void)
 
     while (1) {
 
+        /* Apagar LEDs antes de siguiente recepción */
+        gpio_clear(LED_OK_PORT, LED_OK_PIN);
+        gpio_clear(LED_ERR_PORT, LED_ERR_PIN);
+
         spi_receive_frame_blocking();
 
         printf("\n[SLAVE] Trama recibida\n");
@@ -168,12 +186,16 @@ int main(void)
         printf("CRC RX = 0x%08lX\n", crc_rx);
         printf("CRC CALC = 0x%08lX\n", crc_calc);
 
-        if (crc_rx == crc_calc)
+        if (crc_rx == crc_calc) {
             printf(">>> CRC OK\n");
-        else
+            gpio_set(LED_OK_PORT, LED_OK_PIN);
+        } else {
             printf(">>> CRC ERROR\n");
+            gpio_set(LED_ERR_PORT, LED_ERR_PIN);
+        }
     }
 
     return 0;
 }
+
 
