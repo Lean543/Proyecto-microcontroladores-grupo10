@@ -1,6 +1,9 @@
 /*
  * STM32F429I-Discovery
- * SPI5 SLAVE + CRC + USART working
+ * SPI5 MONITOR (SLAVE) + CRC + USART
+ *
+ * Modo "monitor": recibe tramas por SPI5, recalcula CRC y
+ * enciende LED verde (OK) o rojo (ERROR) según el resultado.
  */
 
 #include <libopencm3/stm32/rcc.h>
@@ -28,9 +31,11 @@ static uint8_t rx_frame[FRAME_LEN];
 /*********** USART REDIRECT ***********/
 int _write(int file, char *ptr, int len)
 {
+    (void)file;
     for (int i = 0; i < len; i++) {
-        if (ptr[i] == '\n')
+        if (ptr[i] == '\n') {
             usart_send_blocking(USART1, '\r');
+        }
         usart_send_blocking(USART1, ptr[i]);
     }
     return len;
@@ -55,8 +60,9 @@ static uint32_t crc32_hw_bytes(const uint8_t *data, size_t len)
         }
     }
 
-    if (byte_count > 0)
+    if (byte_count > 0) {
         crc = crc_calculate(word);
+    }
 
     return crc;
 }
@@ -64,7 +70,7 @@ static uint32_t crc32_hw_bytes(const uint8_t *data, size_t len)
 /*********** CLOCKS ***********/
 static void clock_setup(void)
 {
-    rcc_clock_setup_hse_3v3(&rcc_hse_8mhz_3v3[RCC_CLOCK_3V3_168MHZ]);
+    rcc_clock_setup_pll(&rcc_hse_8mhz_3v3[RCC_CLOCK_3V3_168MHZ]);
 
     rcc_periph_clock_enable(RCC_GPIOA);
     rcc_periph_clock_enable(RCC_GPIOF);
@@ -79,7 +85,8 @@ static void clock_setup(void)
 static void gpio_setup(void)
 {
     /* SPI5: PF7=SCK, PF8=MISO, PF9=MOSI */
-    gpio_mode_setup(GPIOF, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO7 | GPIO8 | GPIO9);
+    gpio_mode_setup(GPIOF, GPIO_MODE_AF, GPIO_PUPD_NONE,
+                    GPIO7 | GPIO8 | GPIO9);
     gpio_set_output_options(GPIOF, GPIO_OTYPE_PP, GPIO_OSPEED_100MHZ,
                             GPIO7 | GPIO8 | GPIO9);
     gpio_set_af(GPIOF, GPIO_AF5, GPIO7 | GPIO8 | GPIO9);
@@ -96,8 +103,6 @@ static void gpio_setup(void)
     gpio_clear(LED_OK_PORT, LED_OK_PIN | LED_ERR_PIN);  /* ambas apagadas al inicio */
 }
 
-
-
 /*********** USART ***********/
 static void usart_setup(void)
 {
@@ -106,16 +111,16 @@ static void usart_setup(void)
     usart_set_stopbits(USART1, USART_STOPBITS_1);
     usart_set_parity(USART1, USART_PARITY_NONE);
     usart_set_flow_control(USART1, USART_FLOWCONTROL_NONE);
-    usart_set_mode(USART1, USART_MODE_TX | USART_MODE_RX);
+    usart_set_mode(USART1, USART_MODE_TX);  /* solo TX es suficiente */
     usart_enable(USART1);
 }
 
-/*********** SPI SLAVE ***********/
+/*********** SPI MONITOR (SLAVE) ***********/
 static void spi_setup(void)
 {
     spi_disable(SPI5);
 
-    /* Config base similar al master, pero luego pasamos a modo SLAVE */
+    /* Config base similar al master, luego pasamos a modo SLAVE */
     spi_init_master(SPI5,
                     SPI_CR1_BAUDRATE_FPCLK_DIV_64,            /* Ignorado en slave */
                     SPI_CR1_CPOL_CLK_TO_0_WHEN_IDLE,
@@ -140,14 +145,15 @@ static void spi_receive_frame_blocking(void)
 {
     uint8_t b = 0;
 
+    /* Esperar hasta ver FRAME_START */
     while (b != FRAME_START) {
-        b = spi_xfer(SPI5, 0x00);
+        b = (uint8_t)spi_xfer(SPI5, 0x00);
     }
 
     rx_frame[0] = b;
 
     for (size_t i = 1; i < FRAME_LEN; i++) {
-        rx_frame[i] = spi_xfer(SPI5, 0x00);
+        rx_frame[i] = (uint8_t)spi_xfer(SPI5, 0x00);
     }
 }
 
@@ -159,26 +165,34 @@ int main(void)
     usart_setup();
     spi_setup();
 
-    printf("\n[SLAVE] Inicializado correctamente\n");
-    printf("[SLAVE] Esperando datos del MASTER...\n");
+    printf("\n[MONITOR] Inicializado correctamente\n");
+    printf("[MONITOR] Esperando datos del MASTER...\n");
 
     while (1) {
 
         spi_receive_frame_blocking();
 
-        printf("\n[SLAVE] Trama recibida\n");
+        printf("\n[MONITOR] Trama recibida\n");
 
         uint8_t len = rx_frame[1];
-        uint32_t crc_rx = rx_frame[2 + len] |
-                        (rx_frame[3 + len] << 8) |
-                        (rx_frame[4 + len] << 16) |
-                        (rx_frame[5 + len] << 24);
+
+        /* (Opcional) comprobar que len coincide con MSG_LEN */
+        if (len != MSG_LEN) {
+            printf("[MONITOR] Longitud inesperada: len=%u (esperado=%u)\n",
+                   (unsigned)len, (unsigned)MSG_LEN);
+        }
+
+        uint32_t crc_rx =  (uint32_t)rx_frame[2 + len]
+                         | ((uint32_t)rx_frame[3 + len] << 8)
+                         | ((uint32_t)rx_frame[4 + len] << 16)
+                         | ((uint32_t)rx_frame[5 + len] << 24);
 
         uint32_t crc_calc = crc32_hw_bytes(&rx_frame[2], len);
 
-        printf("[SLAVE] Mensaje: ");
-        for (int i = 0; i < len; i++)
+        printf("[MONITOR] Mensaje: ");
+        for (int i = 0; i < len; i++) {
             usart_send_blocking(USART1, rx_frame[2 + i]);
+        }
         printf("\n");
 
         printf("CRC RX   = 0x%08lX\n", crc_rx);
@@ -196,7 +210,9 @@ int main(void)
             gpio_set(LED_ERR_PORT, LED_ERR_PIN);
         }
 
-        return 0;
-    };
-}
+        /* Sigue en el bucle para monitorear más tramas */
+    }
 
+    /* En bare-metal normalmente nunca llegamos aquí */
+    // return 0;
+}
