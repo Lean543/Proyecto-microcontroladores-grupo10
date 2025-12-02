@@ -35,6 +35,7 @@ static const char mensaje[] = "Hola desde la STM32 MASTER con CRC";
 /* 1 byte start + 1 byte len + datos + 4 bytes CRC */
 
 static uint8_t frame[FRAME_LEN];
+static int inject_error = 0;  /* 0 = mensaje OK, 1 = mensaje corrupto */
 
 /* --- Pines (ajustables) --- */
 
@@ -51,7 +52,7 @@ static uint8_t frame[FRAME_LEN];
 #define SPI_MISO    GPIO8
 #define SPI_MOSI    GPIO9
 
-/* Chip Select manual como GPIO (no obligatorio para el primer demo) */
+/* Chip Select manual como GPIO */
 #define SPI_CS_PORT GPIOF
 #define SPI_CS_PIN  GPIO10
 
@@ -206,18 +207,27 @@ static void build_frame(void)
     frame[1] = MSG_LEN;
     memcpy(&frame[2], mensaje, MSG_LEN);
 
+    /* 1) Calcular el CRC sobre los DATOS correctos */
     uint32_t crc = crc32_hw_bytes((const uint8_t *)&frame[2], MSG_LEN);
 
+    /* 2) Guardar el CRC en la trama */
     size_t idx = 2 + MSG_LEN;
     frame[idx + 0] = (uint8_t)(crc & 0xFFu);
     frame[idx + 1] = (uint8_t)((crc >> 8) & 0xFFu);
     frame[idx + 2] = (uint8_t)((crc >> 16) & 0xFFu);
     frame[idx + 3] = (uint8_t)((crc >> 24) & 0xFFu);
+
+    /* Introducir un fallo, se modifica un byte de los datos después de haber calculado el CRC. Así el CRC ya no corresponde.*/
+    if (inject_error) {
+
+        frame[2] ^= 0x01;  /* flip del bit 0 del primer byte de datos */
+    }
 }
+
 
 static void spi_send_frame(void)
 {
-    /* LED fijo encendido mientras estamos en "modo envío" */
+    /* LED fijo encendido mientras está en "modo envío" */
     gpio_set(LED1_PORT, LED1_PIN);
 
     /* Selecciona al slave (CS bajo) */
@@ -259,10 +269,29 @@ int main(void)
             /* Debounce sencillo */
             delay(500000);
             if (button_pressed()) {
-                printf("\n[MASTER] Boton pulsado, enviando trama SPI (%u bytes)...\n",
-                       (unsigned)FRAME_LEN);
+
+                /* Construir la trama según el modo actual (OK o corrupta) */
+                build_frame();
+
+                if (inject_error) {
+                    printf("\n[MASTER] Boton pulsado, ENVIANDO trama CORRUPTA (%u bytes)...\n",
+                        (unsigned)FRAME_LEN);
+                } else {
+                    printf("\n[MASTER] Boton pulsado, ENVIANDO trama CORRECTA (%u bytes)...\n",
+                        (unsigned)FRAME_LEN);
+                }
+
                 spi_send_frame();
+
                 printf("[MASTER] Trama enviada.\n");
+
+                /* Alternar el modo para la próxima vez:
+                *  - Primera vez: inject_error = 0 -> OK
+                *  - Luego se vuelve 1 -> CORRUPTA
+                *  - Luego 0 -> OK
+                *  - etc.
+                */
+                inject_error ^= 1;
 
                 /* Esperar a que se suelte el botón */
                 while (button_pressed()) {
