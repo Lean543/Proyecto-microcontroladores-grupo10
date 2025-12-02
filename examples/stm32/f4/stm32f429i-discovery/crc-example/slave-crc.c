@@ -196,6 +196,7 @@ int main(void)
             gpio_set(LED_ERR_PORT, LED_ERR_PIN);
         }
 
-    return 0;
+        return 0;
+    };
 }
 
