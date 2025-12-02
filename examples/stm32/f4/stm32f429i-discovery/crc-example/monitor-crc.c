@@ -130,15 +130,16 @@ static void spi_setup(void)
 
     spi_set_full_duplex_mode(SPI5);
 
-    /* Usar NSS por software para NO depender del pin NSS físico */
+    /* Usar NSS por software, pero en LOW para que el slave se considere siempre seleccionado */
     spi_enable_software_slave_management(SPI5);
-    spi_set_nss_high(SPI5);   /* interno en estado “no fault” */
+    spi_set_nss_low(SPI5);
 
     /* Ahora sí, modo SLAVE */
     spi_set_slave_mode(SPI5);
 
     spi_enable(SPI5);
 }
+
 
 /*********** RECEIVE FRAME ***********/
 static void spi_receive_frame_blocking(void)
