@@ -160,6 +160,20 @@ int main(void)
     printf("\n[SLAVE] Inicializado correctamente\n");
     printf("[SLAVE] Esperando datos del MASTER...\n");
 
+    printf("Probando LEDs externos...\n");
+
+    gpio_clear(GPIOG, LED_OK_PIN);   // Verde ON
+    gpio_set(GPIOG, LED_ERR_PIN);    // Rojo OFF
+    for (volatile int i = 0; i < 8000000; i++);
+
+    gpio_set(GPIOG, LED_OK_PIN);     // Verde OFF
+    gpio_clear(GPIOG, LED_ERR_PIN);  // Rojo ON
+    for (volatile int i = 0; i < 8000000; i++);
+
+    gpio_set(GPIOG, LED_OK_PIN | LED_ERR_PIN); // ambos OFF
+
+    printf("Prueba terminada.\n");
+
     while (1) {
 
         /* Apagar LEDs antes de siguiente recepción */
@@ -188,10 +202,14 @@ int main(void)
 
         if (crc_rx == crc_calc) {
             printf(">>> CRC OK\n");
-            gpio_set(LED_OK_PORT, LED_OK_PIN);
+            gpio_clear(GPIOG, LED_OK_PIN);   // Verde ON
+            gpio_set(GPIOG, LED_ERR_PIN);    // Rojo OFF
+            for (volatile int i = 0; i < 8000000; i++);
         } else {
             printf(">>> CRC ERROR\n");
-            gpio_set(LED_ERR_PORT, LED_ERR_PIN);
+            gpio_set(GPIOG, LED_OK_PIN);     // Verde OFF
+            gpio_clear(GPIOG, LED_ERR_PIN);  // Rojo ON
+            for (volatile int i = 0; i < 8000000; i++);
         }
     }
 
